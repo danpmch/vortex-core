@@ -1,0 +1,4 @@
+
+# github should ignore resources files when doing language detection
+resources/* linguist-detectable=false
+
