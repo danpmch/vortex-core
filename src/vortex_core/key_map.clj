@@ -215,6 +215,9 @@
         0xFD :W3FAVORITE
     })
 
+(def key-map-reverse
+  (into {} (map (fn [[k v]] [v k]) key-map)))
+
 ; the original javascript lists PN and G16(FN) in it's array,
 ; but the map above says G16 is PN. So probably there's a typo
 ; in the original but not sure where yet.

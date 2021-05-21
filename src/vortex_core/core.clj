@@ -106,6 +106,33 @@
      :key k
      :target-keys (mapv #(get km/vortex-core-function-keys %) ktms)}))
 
+(defn pack-function-set
+  [p]
+  (let [k (condp = (:key p)
+            :FN-G14 0x94
+            :FN1-G10 0x95
+            :PN-G16 0x96
+            :FN3 0x97)
+        padding (repeat (- 4 (count (:target-keys p))) 0)]
+    ((record-to-bytes profile) {:length 2
+                                :key k
+                                :index [(count (:target-keys p)) 0]
+                                :data (concat (map #(.indexOf km/vortex-core-function-keys %) (:target-keys p))
+                                              padding)})))
+
+(defn pack-key-change
+  [p]
+  (let [key-to-modifier {:FN-G14 1
+                         :FN1-G10 2
+                         :PN-G16 3
+                         nil 0}
+        [source-modifier source-key] (:source-chord p)
+        [target-modifier target-key] (:target-chord p)]
+    ((record-to-bytes profile) {:length 2
+                                :key 0x20
+                                :index [(get km/key-map-reverse source-key) (get key-to-modifier source-modifier)]
+                                :data [(get km/key-map-reverse target-key) (get key-to-modifier target-modifier) 0 0]})))
+
 (comment "problem cases"
           (2 32 -29 3 -29 0 0 0)
           (2 32 -30 3 -30 0 0 0)
@@ -114,9 +141,9 @@
 (defn key-change
   [profile]
   (let [modifier-to-key (fn [modifier] (condp = modifier
-                                         1 :fn-g14
-                                         2 :fn1-g10
-                                         3 :pn-g16
+                                         1 :FN-G14
+                                         2 :FN1-G10
+                                         3 :PN-G16
                                          nil))
         to-key (fn [k] (get km/key-map (bit-and (long k) 0xff)))
         [k modifier] (:index profile)
@@ -141,7 +168,8 @@
 
 (def file-bytes (byte-streams/to-byte-array (java.io.File. "resources/full_dvorak_w_normal_space.cys")))
 
-(def layout
+(defn bytes-to-layers
+  [file-bytes]
   (let [[h item-bs] ((read-record header) file-bytes)
         [items _] (read-n (read-record item) (:item-size h) item-bs)
         profiles-with-layer (map (fn [item] [item (to-key-def (profile-for-item item file-bytes))])
@@ -149,8 +177,8 @@
         layers (group-by #(:profile-index (first %)) profiles-with-layer)
         reduced-layers (into {} (map (fn [[k vs]] [k (map second vs)]) layers))
         ]
-    (def items-raw items)
-    (def profiles profiles-with-layer)
+    #_(def items-raw items)
+    #_(def profiles profiles-with-layer)
     reduced-layers))
 
 (defn layer-to-string
@@ -223,7 +251,7 @@
 (def full-dvorak
   {nil (merge dvorak
               {:L_SPACE-G9 :PN-G16})
-   :pn standard-pn-keys})
+   :PN-G16 standard-pn-keys})
 
 (def magicka
   {nil (merge (make-layer-dense [:Z :X :C :V]
@@ -235,7 +263,7 @@
 
 (def full-qwerty
   {nil {:L_SPACE-G9 :PN-G16}
-   :pn standard-pn-keys})
+   :PN-G16 standard-pn-keys})
 
 (def full-layout {1 full-dvorak
                   2 magicka
@@ -277,7 +305,8 @@
 
 (defn room-for-profile?
   [location]
-  true)
+  (< (+ (mod location 0x1000) 8)
+     0x1000))
 
 (defn item-for-profile
   [profile index next-profile-location]
@@ -286,19 +315,66 @@
    :macro-index 0
    :data-shift next-profile-location})
 
+(defn compute-item
+  [index current-profile pos]
+  (if (room-for-profile? @pos)
+    (let [item (item-for-profile current-profile index @pos)]
+      (swap! pos #(+ (record-size profile) %))
+      item)
+    (do (while (not (room-for-profile? @pos))
+          (swap! pos inc))
+        (compute-item index current-profile pos))))
+
 (defn compute-items
   [index next-profile-location profiles]
-  (cond (empty? profiles) []
-        (room-for-profile? next-profile-location)
-          (cons (item-for-profile (first profiles) index next-profile-location)
-                (compute-items (+ next-profile-location (record-size profile)) (rest profiles)))
-        :else (throw (new RuntimeException "not implemented"))))
+  (if (empty? profiles)
+    []
+    (cons (compute-item index (first profiles) next-profile-location)
+          (compute-items index next-profile-location (rest profiles)))))
+
+(defn profile-to-bytes
+  [profile]
+  (condp = (:type profile)
+    :function-set (pack-function-set profile)
+    :key-change (pack-key-change profile)))
 
 (defn layout-to-bytes
   [layout]
-  (let [profiles (map to-records layout)
+  (let [profiles (sort-by first (map to-records layout))
+        total-profiles (apply + (map (comp count second) profiles))
         first-profile-location (+ (record-size header)
-                                  (* (record-size item)
-                                     (count profiles)))]
-    profiles))
+                                  (* (record-size item) total-profiles))
+        profile-location (atom first-profile-location)
+        items (map (fn [[index profiles]]
+                     (let [is (compute-items index profile-location profiles)]
+                       ; the original macro logic adds 12 zero bytes for no apparent reason
+                       (swap! profile-location #(+ 12 %))
+                       is))
+                   profiles)
+        flat-items (apply concat items)
+        layout-header {:title "CYFI"
+                       :rev 0
+                       :item-size (count flat-items)}
+        layer-records (fn [[index profiles]] (concat profiles [{:type :padding}]))
+        records (concat [layout-header]
+                        flat-items
+                        (apply concat (map layer-records profiles)))
+        record-bytes (reduce (fn [bytes record]
+                               (let [record-bytes (condp = (:type record)
+                                                    nil ((record-to-bytes header) record)
+                                                    0 ((record-to-bytes item) record)
+                                                    :padding (repeat 12 (byte 0))
+                                                    (profile-to-bytes record))]
+                                 #_(println record)
+                                 #_(println record-bytes)
+                                 (into bytes record-bytes)))
+                             []
+                             records)]
+    (concat record-bytes
+            (repeat (- 8192 (count record-bytes)) 255))))
+
+(defn save-layout
+  [layout path]
+  (let [bytes (layout-to-bytes layout)]
+    (byte-streams/transfer (byte-array bytes) (java.io.File. path) {:append? false})))
 
