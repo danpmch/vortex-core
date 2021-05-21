@@ -228,8 +228,8 @@
                     :1 :2 :3 :4 :5 :6 :7 :8 :9 :0))
 
 (def symbols
-  (make-layer-dense [:D :F :J :K :L :SEMICOLON]
-                    :TILDE :EQUATION :SLASH :L_BRACKETS :R_BRACKETS :BACKSLASH))
+  (make-layer-dense [:A   :S          :D     :F        :J     :K          :L          :SEMICOLON]
+                     :NEG :APOSTROPHE :TILDE :EQUATION :SLASH :L_BRACKETS :R_BRACKETS :BACKSLASH))
 
 (def arrows
   (make-layer-dense [:Z :X :C :V]
@@ -259,14 +259,15 @@
               {:L_SPACE-G9 :SPACE})})
 
 (def standard-gaming
-  {nil {:L_SPACE-G9 :SPACE}})
+  {nil {:L_SPACE-G9 :SPACE}
+   :PN-G16 standard-pn-keys})
 
 (def full-qwerty
   {nil {:L_SPACE-G9 :PN-G16}
    :PN-G16 standard-pn-keys})
 
-(def full-layout {1 full-dvorak
-                  2 magicka
+(def full-layout {1 full-qwerty
+                  2 full-dvorak
                   3 standard-gaming})
 
 (defn make-key-change
